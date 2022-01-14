@@ -1,3 +1,19 @@
+/* Copyright (C) 2022 Connor Claypool
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <vpi_user.h>
 #include <stdio.h>
 #include <string.h>
@@ -44,8 +60,10 @@ PLI_INT32 gpio ## __pin ## _output_change_cb(p_cb_data cb_data) \
 
 #define GPIO_IN_NAME(__pin) "gpio_in__pin"
 
+// callback function type
 typedef PLI_INT32 (*vpi_cb_t)(struct t_cb_data *);
 
+// struct for top-level I/O of simulated circuit
 typedef struct {
     vpiHandle clk;
     vpiHandle gpio_in[NUM_GPIO_INPUT];
@@ -137,23 +155,20 @@ void enqueue_send_event(gpio_event_t ev)
     pthread_mutex_unlock(&send_queue_mx);
 }
 
-// from ghdl-vpi-virtual-board
-static s_vpi_time double_to_vpi_time(double t, double time_resolution)
+// convert time from double to vpiSimTime
+s_vpi_time double_to_vpi_time(double t, double time_resolution)
 {
-	s_vpi_time ts;
-	uint64_t simtime = (uint64_t)(t * time_resolution);
-    //vpi_printf("Simtime: %lu\n", simtime);
+	s_vpi_time vpi_time;
+	uint64_t sim_time = (uint64_t)(t * time_resolution);
 
-	ts.type = vpiSimTime;
-	ts.low = (uint32_t)(simtime & 0xffffffffUL);
-	ts.high = (uint32_t)(simtime >> 32);
+	vpi_time.type = vpiSimTime;
+	vpi_time.low = (uint32_t)(sim_time & __UINT32_MAX__);
+	vpi_time.high = (uint32_t)(sim_time >> 32);
 
-    //vpi_printf("Simtime: high: %u, low: %u!\n", ts.high, ts.low);
-
-	return ts;
+	return vpi_time;
 }
 
-// regsiter a callback to run after a given delay (given in simulation time)
+// regsiter a callback to run after a given delay
 void register_delay_cb(vpi_cb_t cb_rtn, double delay, nets_t *nets)
 {
     s_vpi_time time = double_to_vpi_time(delay, nets->time_resolution);
@@ -239,14 +254,17 @@ void write_int_value_to_net(vpiHandle net, int val)
     }
 }
 
-// from vpi board
+// get an integer value from a net
 int get_int_value_from_net(vpiHandle net)
 {
-	int ret = 0, i, w = vpi_get(vpiSize, net);
-	s_vpi_value val;
-	val.format = vpiBinStrVal;
+	int ret = 0; 
+    int i;
+    int width = vpi_get(vpiSize, net);
+	s_vpi_value val = {
+        .format = vpiBinStrVal,
+    };
 	vpi_get_value(net, &val);
-	for (i = 0; i < w; i++) {
+	for (i = 0; i < width; i++) {
 		ret <<= 1;
 		if (val.value.str[i] == '1')
 			ret |= 1;
@@ -254,7 +272,6 @@ int get_int_value_from_net(vpiHandle net)
 
 	return ret;
 }
-
 
 // find and save required top level nets
 void analyze_toplevel_nets(nets_t *nets)
@@ -275,7 +292,7 @@ void analyze_toplevel_nets(nets_t *nets)
     vpi_free_object(iter);
 
     // get the name of the top level unit and print it
-    printf("Top-level unit name: %s\n", vpi_get_str(vpiName, top));
+    vpi_printf("Top-level unit name: %s\n", vpi_get_str(vpiName, top));
 
     // get an iterator for the nets (logical wires) within the top level unit
     iter = vpi_iterate(vpiNet, top);
@@ -283,7 +300,7 @@ void analyze_toplevel_nets(nets_t *nets)
         vpi_free_object(iter);
         return;
     }
-    printf("Iterating through top-level nets...\n");
+    vpi_printf("Iterating through top-level nets...\n");
     // loop through the top-level nets using the iterator
     while ((net = vpi_scan(iter))) {
         net_name = vpi_get_str(vpiName, net);
@@ -343,7 +360,6 @@ PLI_INT32 poll_inputs_cb(p_cb_data cb_data);
 
 PLI_INT32 reset_clock_cb(p_cb_data cb_data)
 {
-    //vpi_printf("Reset clock!\n");
     nets_t *nets = NETS(cb_data);
     write_int_value_to_net(nets->clk, 0);
     register_rwsync_cb(&poll_inputs_cb, nets);
@@ -352,13 +368,13 @@ PLI_INT32 reset_clock_cb(p_cb_data cb_data)
 
 PLI_INT32 set_clock_cb(p_cb_data cb_data) 
 {
-    //vpi_printf("Set clock!\n");
     nets_t *nets = NETS(cb_data);
     write_int_value_to_net(nets->clk, 1);
     register_delay_cb(&reset_clock_cb, HALF_PERIOD, nets);
     return 0;
 }
 
+// callback once a clock cycle to set simulation inputs
 PLI_INT32 poll_inputs_cb(p_cb_data cb_data)
 {
     gpio_event_t ev;
@@ -366,10 +382,10 @@ PLI_INT32 poll_inputs_cb(p_cb_data cb_data)
 
     // pop item off queue
     pthread_mutex_lock(&recv_queue_mx);
-    //vpi_printf("Polling inputs!\n");
     if (!gpio_ev_queue_empty(&recv_queue)) {
         ev = gpio_ev_queue_pop(&recv_queue);
-        printf("Pin: %d, Value: %d\n", ev.pin, ev.val);
+        vpi_printf("Pin: %d, Value: %d\n", ev.pin, ev.val);
+        // set simulation input value
         write_int_value_to_net(nets->gpio_in[ev.pin], ev.val);
     }
     pthread_mutex_unlock(&recv_queue_mx);
@@ -444,7 +460,7 @@ PLI_INT32 simulation_start_cb(p_cb_data cb_data)
 // end of simulation callback
 PLI_INT32 simulation_end_cb(p_cb_data cb_data) 
 {
-    printf("End of simulation!\n");
+    vpi_printf("End of simulation!\n");
     // deallocate nets struct
     nets_t *nets = NETS(cb_data);
     if (nets) {
@@ -498,7 +514,7 @@ int init_socket_and_listen()
     // allow address/port reuse without timeout
     err = setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
     if (err) {
-        printf("Error setting socket option: %d\n", err);
+        vpi_printf("Error setting socket option: %d\n", err);
     }
 
     // initialize listen address
@@ -510,32 +526,39 @@ int init_socket_and_listen()
     // bind socket to address & port
     err = bind(listen_sock, (struct sockaddr *)&saddr, sizeof(saddr));
 	if (err) {
-		printf("Error binding socket: %d\n", err);
+		vpi_printf("Error binding socket: %d\n", err);
 	}
 
     // listen for incoming connections
 	err = listen(listen_sock, 2);
 	if (err) {
-		printf("Error listening\n");
+		vpi_printf("Error listening\n");
 	}
 
     return listen_sock;
 }
 
 // receive message
-int receive_message(int sock, uint8_t *buf)
+int receive_message(int sock, uint8_t *buf, int len)
 {
 	int ret;
 	int bytes_read = 0;
 
+    // check bounds
+    if (len < MSG_LEN) {
+        return -1;
+    }
+
 	do
 	{
+        // receive message from socket
 		ret = read(sock, buf + bytes_read, MSG_LEN - bytes_read);
 		if (ret < 0) {
-			printf("Error receiving on socket: %d\n", ret);
+			vpi_printf("Error receiving on socket: %d\n", ret);
 		} else {
 			bytes_read += ret;
 		}
+    // repeat if full message was not received
 	} while (bytes_read < MSG_LEN);
 
     return bytes_read;
@@ -547,20 +570,19 @@ void *recv_thread_fn(void *unused)
     uint8_t msg_buf[MSG_LEN];
     gpio_event_t ev;
 
-    printf("Recv thread created!\n");
+    vpi_printf("Recv thread created!\n");
     while (1) {
         // receive message
-        receive_message(conn_sock, msg_buf);
+        receive_message(conn_sock, msg_buf, MSG_LEN);
         // extract values
         ev.pin = msg_buf[MSG_PIN_IDX];
         ev.val = msg_buf[MSG_VALUE_IDX];
-        //printf("Pin: %d, Value: %d\n", ev.pin, ev.val);
         // add to queue if it is not full
         pthread_mutex_lock(&recv_queue_mx);
         if (!gpio_ev_queue_full(&recv_queue)) {
             gpio_ev_queue_push(&recv_queue, ev);
         } else {
-            printf("Recv queue full!\n");
+            vpi_printf("Recv queue full!\n");
         }
         pthread_mutex_unlock(&recv_queue_mx);
 
@@ -570,8 +592,12 @@ void *recv_thread_fn(void *unused)
 }
 
 // format message
-int generate_msg(gpio_event_t ev, uint8_t *msg)
+int generate_msg(gpio_event_t ev, uint8_t *msg, int len)
 {
+    // check bounds
+    if (len < MSG_LEN) {
+        return -1;
+    }
 	// place message into buffer
 	msg[MSG_PIN_IDX] = ev.pin;
 	msg[MSG_VALUE_IDX] = ev.val;
@@ -579,19 +605,26 @@ int generate_msg(gpio_event_t ev, uint8_t *msg)
 }
 
 // send message
-int send_message(uint8_t *msg)
+int send_message(uint8_t *msg, int len)
 {
     int ret;
     int bytes_written = 0;
 
+    // check bounds
+    if (len < MSG_LEN) {
+        return -1;
+    }
+
     do
     {
+        // send message through socket
         ret = write(conn_sock, msg + bytes_written, MSG_LEN - bytes_written);
         if (ret < 0) {
-            printf("Error sending message: %d\n", ret);
+            vpi_printf("Error sending message: %d\n", ret);
         } else {
             bytes_written += ret;
         }
+    // retry if whole message was not sent
     } while (bytes_written < MSG_LEN);
      
     return bytes_written;
@@ -605,7 +638,7 @@ void *send_thread_fn(void *unused)
     bool got_event;
     uint8_t msg_buf[MSG_LEN];
 
-    printf("Send thread created!\n");
+    vpi_printf("Send thread created!\n");
 
     while (1) {
         // check send queue
@@ -619,9 +652,9 @@ void *send_thread_fn(void *unused)
         pthread_mutex_unlock(&send_queue_mx);
 
         if (got_event) {
-            generate_msg(ev, msg_buf);
-            printf("Send: pin: %d, value: %d\n", ev.pin, ev.val);
-            send_message(msg_buf);
+            generate_msg(ev, msg_buf, MSG_LEN);
+            vpi_printf("Send: pin: %d, value: %d\n", ev.pin, ev.val);
+            send_message(msg_buf, MSG_LEN);
         } else {
             // wait until signalled and then re-init condvar
             pthread_mutex_lock(&send_queue_mx);
@@ -643,13 +676,13 @@ void entry_point_cb()
 
     // init sync objects
     if (pthread_mutex_init(&send_queue_mx, NULL)) {
-        printf("Init send mutex failed!\n");
+        vpi_printf("Init send mutex failed!\n");
     }
     if (pthread_mutex_init(&recv_queue_mx, NULL)) {
-        printf("Init recv mutex failed!\n");
+        vpi_printf("Init recv mutex failed!\n");
     }
     if (pthread_cond_init(&gpio_event_added, NULL)) {
-        printf("Init cond var failed!\n");
+        vpi_printf("Init cond var failed!\n");
     }
 
     // listen for incoming connections
@@ -660,17 +693,12 @@ void entry_point_cb()
     // launch threads to handle sending and receiving messages
     err = pthread_create(&recv_thread, NULL, recv_thread_fn, NULL);
     if (err) {
-        printf("Error creating recv thread: %d\n", err);
+        vpi_printf("Error creating recv thread: %d\n", err);
     }
     err = pthread_create(&send_thread, NULL, send_thread_fn, NULL);
     if (err) {
-        printf("Error creating send thread: %d\n", err);
+        vpi_printf("Error creating send thread: %d\n", err);
     }
-
-    // pthread_join(recv_thread, NULL);
-    // pthread_join(send_thread, NULL);
-
-    // exit(0);
 
     // allocate memory for nets struct
     nets = (nets_t*)malloc(sizeof(nets_t));
